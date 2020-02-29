@@ -1,7 +1,7 @@
 from django.http import HttpRequest, HttpResponse, JsonResponse
 import json
 
-from .validator import validate_json, ValidationSettings, Type, ValidationResult
+from .validator import validate_json, ValidationSettings, ValidationType, ValidationResult
 from enum import Enum
 from django.db.models.query import QuerySet, RawQuerySet
 from video.models import FavoriteVideo, SavedSearchQuery, SavedSearchVideo, Page, SavedSearchResult
@@ -52,8 +52,8 @@ def search(request: HttpRequest):
     # Проверяем присланные данные
     def how_validate() -> Dict:
         return {
-            "query": ValidationSettings(type=Type.String_Max_255, is_required=True),
-            "next_page_token": ValidationSettings(type=Type.String_Max_255, is_required=False)
+            "query": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=True),
+            "next_page_token": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=False)
         }
 
     validation_result: ValidationResult = validate_json(json_request_data=json_request_data, how_validate=how_validate())
@@ -259,8 +259,8 @@ def change_video_favorite_status(request: HttpRequest):
     # Проверяем присланные данные
     def how_validate() -> Dict:
         return {
-            "id_video": ValidationSettings(type=Type.String_Max_255, is_required=True),
-            "action": ValidationSettings(type=Type.Int, is_required=True)
+            "id_video": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=True),
+            "action": ValidationSettings(validation_type=ValidationType.Int, is_required=True)
         }
 
     validation_result: ValidationResult = validate_json(json_request_data=json_request_data, how_validate=how_validate())
