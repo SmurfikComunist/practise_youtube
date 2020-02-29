@@ -21,10 +21,10 @@ class MyResponse:
 
     def __init__(self, is_valid: bool, error: Optional[str], response_json: Optional[Dict]):
         self.is_valid = is_valid
-        self.error: Optional[str] = error
+        self.error = error
         self.response_json: Dict = {}
         if response_json is not None:
-            self.response_json: Dict = response_json
+            self.response_json = response_json
 
     def return_json_response(self) -> JsonResponse:
         self.response_json.update({"success": self.is_valid})

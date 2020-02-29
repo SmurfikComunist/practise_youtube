@@ -17,8 +17,8 @@ class ValidationResult:
     __slots__ = ('error', 'is_valid')
 
     def __init__(self, error: Optional[str], is_valid: bool):
-        self.error: Optional[str] = error
-        self.is_valid: bool = is_valid
+        self.error = error
+        self.is_valid = is_valid
 
     def add_error(self, error: str, key: str = None):
         if key is None:
