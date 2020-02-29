@@ -1,5 +1,5 @@
-from typing import NamedTuple, Dict, Optional, Callable
-from enum import Enum, auto
+from typing import NamedTuple, Dict, Optional
+from enum import Enum
 
 
 class Type(Enum):
@@ -11,10 +11,6 @@ class ValidationSettings(NamedTuple):
     type: Type
     is_required: bool = True
 
-
-# class ValidationResult(NamedTuple):
-#     error: Optional[str]
-#     is_valid: bool
 
 class ValidationResult:
     __slots__ = ('error', 'is_valid')
