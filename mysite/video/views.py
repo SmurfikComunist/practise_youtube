@@ -1,9 +1,9 @@
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, JsonResponse
 import json
-
-from .validator import validate_json, ValidationSettings, ValidationType, ValidationResult
+from .validator import validate_body_and_get_deserialized_object, \
+    create_field_int, ValidationType, ValidationResult
 from enum import Enum
-from django.db.models.query import QuerySet, RawQuerySet
+from django.db.models.query import RawQuerySet
 from video.models import FavoriteVideo, SavedSearchQuery, SavedSearchVideo, Page, SavedSearchResult
 from django.core import serializers
 from typing import Optional, Dict, List, Set
@@ -13,6 +13,8 @@ from django.forms.models import model_to_dict
 from django.db import transaction
 import iso8601
 from django.core.exceptions import ObjectDoesNotExist
+from dataclasses import dataclass, field
+import marshmallow.validate
 # Create your views here.
 
 
@@ -46,17 +48,17 @@ def get_array_of_jsonobjects(dict_video_result: RawQuerySet) -> List[Dict]:
     return list_of_objects
 
 
+# Tested
 def search(request: HttpRequest):
-    json_request_data = json.loads(request.body)
+    @dataclass(frozen=True)
+    class Data:
+        query: ValidationType.String_Max_255
+        next_page_token: Optional[ValidationType.String_Max_255]
 
     # Проверяем присланные данные
-    def how_validate() -> Dict:
-        return {
-            "query": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=True),
-            "next_page_token": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=False)
-        }
-
-    validation_result: ValidationResult = validate_json(json_request_data=json_request_data, how_validate=how_validate())
+    validation_result: ValidationResult
+    data: Optional[Data]
+    validation_result, data = validate_body_and_get_deserialized_object(request.body, Data)
 
     def check_is_video_exist_in_favorite(video_list: List[Dict], list_id_video: Optional[List[str]]):
         if list_id_video is None:
@@ -76,8 +78,7 @@ def search(request: HttpRequest):
     # Берем результат поиска из бд, если он есть
     if validation_result.is_valid:
 
-        def get_videos_from_db(json_request_data, dict_id_saved_search_query: Dict) -> MyResponse:
-            next_page_token: str = json_request_data.get("next_page_token")
+        def get_videos_from_db(dict_id_saved_search_query: Dict) -> MyResponse:
 
             def get_videos(id_saved_search_query: int, id_page: Optional[int]):
                 list_param: List[int] = [id_saved_search_query]
@@ -115,11 +116,12 @@ def search(request: HttpRequest):
 
                 return MyResponse(is_valid=True, error=None, response_json=response_json)
 
-            if next_page_token is not None:
-                dict_id_page: Dict = Page.objects.filter(**{"page_token": next_page_token}).values("id_page")[0]
+            if data.next_page_token is not None:
+                dict_id_page: Dict = Page.objects.filter(**{"page_token": data.next_page_token}).values("id_page")[0]
 
                 if len(dict_id_page) > 0:
-                    return get_videos(dict_id_saved_search_query.get("id_saved_search_query"), dict_id_page.get("id_page"))
+                    return get_videos(
+                        dict_id_saved_search_query.get("id_saved_search_query"), dict_id_page.get("id_page"))
                 else:
                     return get_videos(dict_id_saved_search_query.get("id_saved_search_query"), None)
             else:
@@ -128,11 +130,11 @@ def search(request: HttpRequest):
         dict_id_saved_search_query: Dict = {}
         try:
             dict_id_saved_search_query = \
-                SavedSearchQuery.objects.filter(**{"query": json_request_data.get("query")}).values()[0]
+                SavedSearchQuery.objects.filter(**{"query": data.query}).values()[0]
         except IndexError:
             pass
         need_get_from_db: bool = (len(dict_id_saved_search_query) > 0)
-        if need_get_from_db and ("next_page_token" in json_request_data):
+        if need_get_from_db and (data.next_page_token is not None):
             dict_result: RawQuerySet = \
                 SavedSearchResult.objects.raw(
                     "SELECT r.id_saved_search_result, p.id_page "
@@ -140,19 +142,19 @@ def search(request: HttpRequest):
                     "INNER JOIN page AS p "
                     "ON r.id_page = p.id_page "
                     "WHERE r.id_saved_search_query = %s AND p.page_token = %s;",
-                    [dict_id_saved_search_query.get("id_saved_search_query"), json_request_data.get("next_page_token")])
+                    [dict_id_saved_search_query.get("id_saved_search_query"), data.next_page_token])
 
             need_get_from_db = (len(dict_result) > 0)
 
         if need_get_from_db:
-            return get_videos_from_db(json_request_data, dict_id_saved_search_query)
+            return get_videos_from_db(dict_id_saved_search_query)
 
     # Берем результат поиска, используя Youtube API и сохраняем его в бд
     if validation_result.is_valid:
-        def save_results_in_db(json_request_data, json_response, items: List[Dict]) -> MyResponse:
+        def save_results_in_db(json_response, items: List[Dict]) -> MyResponse:
             # Сохраняем запрос
             dict_id_saved_search_query: Dict = \
-                model_to_dict(SavedSearchQuery.objects.get_or_create(query=json_request_data.get("query"))[0],
+                model_to_dict(SavedSearchQuery.objects.get_or_create(query=data.query)[0],
                               fields="id_saved_search_query")
 
             # Сохраняем токен следующей страницы, если он ещё не сохрянен
@@ -162,9 +164,9 @@ def search(request: HttpRequest):
 
             # Если нам прислали токен следущей страницы, а для этого запрос он текущий, то берем/создаем его из базы
             dict_id_recieved_next_page_token: Dict = {}
-            if "next_page_token" in json_request_data.keys():
+            if data.next_page_token is not None:
                 dict_id_recieved_next_page_token = \
-                    model_to_dict(Page.objects.get_or_create(page_token=json_request_data.get("next_page_token"))[0],
+                    model_to_dict(Page.objects.get_or_create(page_token=data.next_page_token)[0],
                                   fields="id_page")
 
             #
@@ -216,27 +218,30 @@ def search(request: HttpRequest):
             return MyResponse(is_valid=True, error=None, response_json={
                 "video_list": video_list, "next_page_token": json_response.get("nextPageToken")})
 
-        def get_video_from_youtube(json_request_data, query: str) -> MyResponse:
-            payload: Dict = {"part": "snippet", "q": query, "type": "video", "key": YOUTUBE_API_KEY, "maxResults": 10}
-            if "next_page_token" in json_request_data:
-                payload.update({"pageToken": json_request_data.get("next_page_token")})
+        def get_video_from_youtube() -> MyResponse:
+            payload: Dict = {
+                "part": "snippet", "q": data.query, "type": "video", "key": YOUTUBE_API_KEY, "maxResults": 10}
+
+            if data.next_page_token is not None:
+                payload.update({"pageToken": data.next_page_token})
             response: send_request.Response = \
                 send_request.get("https://www.googleapis.com/youtube/v3/search", params=payload)
 
             if (response.status_code == 200) or (response.status_code == 201):
                 json_response = response.json()
                 items: List = json_response.get("items")
+
                 if len(items) > 0:
-                    return save_results_in_db(json_request_data=json_request_data,
-                                              json_response=json_response, items=items)
+                    return save_results_in_db(json_response=json_response, items=items)
                 else:
                     return MyResponse(is_valid=False, error="no results", response_json=None)
             else:
                 return MyResponse(is_valid=False, error="failed to find videos", response_json=None)
 
-        return get_video_from_youtube(json_request_data=json_request_data, query=json_request_data.get("query"))
+        return get_video_from_youtube()
 
-    return MyResponse(is_valid=validation_result.is_valid, error=validation_result.error, response_json=None)
+    return MyResponse(
+        is_valid=validation_result.is_valid, error=validation_result.validation_error, response_json=None)
 
 
 # Tested
@@ -254,44 +259,39 @@ def favorite_list(request: HttpRequest):
 
 # Tested
 def change_video_favorite_status(request: HttpRequest):
-    json_request_data = json.loads(request.body)
+
+    @dataclass(frozen=True)
+    class Data:
+        id_video: ValidationType.String_Max_255
+        action: int = field(**create_field_int(
+            is_required=True, validate_func=marshmallow.validate.Range(min=0, max=1)))
 
     # Проверяем присланные данные
-    def how_validate() -> Dict:
-        return {
-            "id_video": ValidationSettings(validation_type=ValidationType.String_Max_255, is_required=True),
-            "action": ValidationSettings(validation_type=ValidationType.Int, is_required=True)
-        }
-
-    validation_result: ValidationResult = validate_json(json_request_data=json_request_data, how_validate=how_validate())
+    validation_result: ValidationResult
+    data: Optional[Data]
+    validation_result, data = validate_body_and_get_deserialized_object(request.body, Data)
 
     if validation_result.is_valid:
         class ActionType(Enum):
             Remove = 0
             Add = 1
 
-        action: int = int(json_request_data.get("action"))
-        validation_result.is_valid = (action == 0) or (action == 1)
+        model_favorite_video: Optional[FavoriteVideo] = None
+        try:
+            model_favorite_video = FavoriteVideo.objects.get(id_video=data.id_video)
+        except ObjectDoesNotExist:
+            pass
 
-        if validation_result.is_valid:
-            id_video = json_request_data.get("id_video")
-            model_favorite_video: FavoriteVideo = None
-            try:
-                model_favorite_video = FavoriteVideo.objects.get(id_video=id_video)
-            except ObjectDoesNotExist:
-                pass
+        if data.action == ActionType.Add.value:
+            if model_favorite_video is None:
+                FavoriteVideo(id_video=data.id_video).save()
+            else:
+                validation_result.add_error("specified video already exists in favorite list")
+        elif data.action == ActionType.Remove.value:
+            if model_favorite_video is None:
+                validation_result.add_error("specified video doesn't exists")
+            else:
+                model_favorite_video.delete()
 
-            if action == ActionType.Add.value:
-                if model_favorite_video is None:
-                    FavoriteVideo(id_video=id_video).save()
-                else:
-                    validation_result.add_error("specified video already exists in favorite list")
-            elif action == ActionType.Remove.value:
-                if model_favorite_video is None:
-                    validation_result.add_error("specified video doesn't exists")
-                else:
-                    model_favorite_video.delete()
-        else:
-            validation_result.add_error("must be 0 or 1", key="action")
-
-    return MyResponse(is_valid=validation_result.is_valid, error=validation_result.error, response_json=None)
+    return MyResponse(
+        is_valid=validation_result.is_valid, error=validation_result.validation_error, response_json=None)
